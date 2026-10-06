@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0C1618">
+<meta name="description" content="A procedural physics-visual machine.">
+<title>Driftweave</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<main id="app">
+
+  <section class="stage" aria-label="Scene">
+    <canvas id="view" width="720" height="720" aria-label="The scene"></canvas>
+  </section>
+
+  <section class="readout">
+    <div class="readout-top">
+      <h1 id="sceneName" class="scene-name">—</h1>
+      <button id="renameBtn" class="ghost tiny" title="Rename this scene">rename</button>
+    </div>
+    <p id="sceneDetail" class="scene-detail">press play to begin</p>
+  </section>
+
+  <section class="transport" aria-label="Transport">
+    <div class="transport-main">
+      <button id="prevBtn" class="step" title="Previous scene" aria-label="Previous scene">‹</button>
+      <button id="playBtn" class="play" aria-pressed="false">
+        <span class="play-glyph" aria-hidden="true"></span>
+        <span id="playLabel">Play</span>
+      </button>
+      <button id="nextBtn" class="step" title="Next scene" aria-label="Next scene">›</button>
+    </div>
+    <div class="transport-sub">
+      <button id="newBtn" class="key">New scene</button>
+      <button id="rerollBtn" class="key">Re-roll style</button>
+    </div>
+  </section>
+
+  <section class="panel" aria-label="Frame">
+    <h2 class="section-head">Frame</h2>
+    <div class="row wrap" id="aspectRow">
+      <button class="ghost tiny" data-aspect="1">1:1</button>
+      <button class="ghost tiny" data-aspect="0.75">3:4</button>
+      <button class="ghost tiny" data-aspect="1.3333">4:3</button>
+      <button class="ghost tiny" data-aspect="0.5625">9:16</button>
+      <button class="ghost tiny" data-aspect="1.7778">16:9</button>
+      <button class="ghost tiny" data-aspect="2.35">2.35</button>
+      <button class="ghost tiny" data-aspect="0">fill</button>
+    </div>
+  </section>
+
+  <section class="panel" aria-label="Feel">
+    <h2 class="section-head">Feel</h2>
+    <p class="hint">These move the scene you are watching, without rebuilding it.</p>
+    <label class="slider"><span>Gravity <b id="gravVal">—</b></span>
+      <input type="range" id="grav" min="-1" max="1" step="0.01" value="0"></label>
+    <label class="slider"><span>Trail <b id="trailVal">—</b></span>
+      <input type="range" id="trail" min="0" max="1" step="0.01" value="0.4"></label>
+    <label class="slider"><span>Density <b id="countVal">—</b></span>
+      <input type="range" id="count" min="0" max="1" step="0.01" value="0.7"></label>
+  </section>
+
+  <section class="panel" aria-label="Saved">
+    <h2 class="section-head">Saved</h2>
+    <div id="savedList" class="saved-list"></div>
+    <div class="row wrap">
+      <button id="saveBtn" class="ghost">Save</button>
+      <button id="copyCode" class="ghost">Copy code</button>
+      <button id="pasteCode" class="ghost">Paste a code</button>
+    </div>
+    <pre id="shareOut" class="diag-out" hidden></pre>
+  </section>
+
+  <footer class="colophon">
+    <p>Space plays. N makes something new. R re-rolls the style.</p>
+    <p>Everything is generated in the browser and stored on this device.</p>
+  </footer>
+
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
