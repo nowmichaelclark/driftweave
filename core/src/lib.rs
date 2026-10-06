@@ -15,6 +15,8 @@
 
 #![allow(static_mut_refs)]
 
+use std::f32::consts::TAU;
+
 // --------------------------------------------------------------- limits
 
 const MAX_P: usize = 1600;
@@ -555,8 +557,8 @@ fn cloth_emit(w: &mut World) {
         // Base tone follows the sheet's rows (top bright, bottom dark);
         // stretch pushes it up the ramp so tension reads in the colour.
         let t = (w.ptone[a] * 0.55 + stretch * 0.9).clamp(0.0, 1.0);
-        let (r, g, b, al) = pal(w, t, bri * (0.55 + stretch * 0.4));
-        w.prim_line(w.px[a], w.py[a], w.px[b], w.py[b], r, g, b, al, size * 0.75);
+        let (cr, cg, cb, ca) = pal(w, t, bri * (0.55 + stretch * 0.4));
+        w.prim_line(w.px[a], w.py[a], w.px[b], w.py[b], cr, cg, cb, ca, size * 0.75);
     }
 }
 
