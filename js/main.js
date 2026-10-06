@@ -1,13 +1,14 @@
 // Driftweave: the entry point.
 //
 // The recipe is a 24-float spec and a seed. The browser writes the spec,
-// the Rust core simulates it and hands back a draw list, this file paints
-// it. Everything else -- buttons, sliders, code sharing, saves -- is
-// plumbing.
+// the Rust core simulates it and hands back either a draw list or a
+// raster, this file paints it. Everything else -- buttons, sliders, code
+// sharing, saves -- is plumbing.
 
-import { loadCore, spec as specView, prims, init, resize, step } from './core.js';
+import { loadCore, spec as specView, prims, init, resize, step,
+         isRaster, rasterView, rasterW, rasterH } from './core.js';
 import { newSpec, sceneOf, encodeScene, decodeScene, codeKind, STYLES, S, RANGES, WALLS } from './scene.js';
-import { paint } from './render.js';
+import { paint, paintRaster } from './render.js';
 import * as store from './storage.js';
 
 const canvas = document.getElementById('view');
@@ -19,9 +20,9 @@ const WORLD_H = 1000;
 const state = {
   ready: false,
   playing: false,
-  scene: null,          // { spec: Float32Array, seed, name, style }
-  aspect: 1,            // width / height
-  aspectMode: 'fixed',  // 'fixed' or 'fill'
+  scene: null,
+  aspect: 1,
+  aspectMode: 'fixed',
   worldW: 1000,
   worldH: WORLD_H,
   raf: null,
@@ -57,9 +58,6 @@ async function boot() {
 // --------------------------------------------------------------- the frame
 
 function fitCanvas() {
-  // The canvas's intrinsic size is what the sim draws into, scaled up or
-  // down by CSS. A 1000-tall world at 720px display height is a good
-  // balance: crisp on a phone, not silly on a 4K monitor.
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const baseH = 720;
   const h = Math.round(baseH * dpr);
@@ -72,15 +70,19 @@ function fitCanvas() {
 }
 
 function applySpec() {
-  // Push the current scene into the wasm's spec buffer.
   const view = specView();
   const src = state.scene.spec;
   for (let i = 0; i < src.length; i++) view[i] = src[i];
 }
 
 function drawOnce() {
-  const list = prims();
-  paint(ctx, list, state.worldW, state.worldH, canvas.width, canvas.height);
+  // Two output modes: a draw list of dots/lines/rects for the particle
+  // styles, or a raster image for Flow. The core tells us which.
+  if (isRaster()) {
+    paintRaster(ctx, rasterView(), rasterW(), rasterH(), canvas.width, canvas.height);
+  } else {
+    paint(ctx, prims(), state.worldW, state.worldH, canvas.width, canvas.height);
+  }
 }
 
 function loop(now) {
@@ -118,7 +120,6 @@ function newScene() {
 }
 
 function rerollStyle() {
-  // Same seed, new style: the shape changes, the family does not.
   const cur = state.scene;
   const next = (cur.style + 1 + Math.floor(Math.random() * (STYLES.length - 1))) % STYLES.length;
   const fresh = newSpec(cur.seed, next);
@@ -172,8 +173,6 @@ function setAspect(a, mode) {
   state.aspect = a;
   state.aspectMode = mode;
   fitCanvas();
-  // The world's coordinates change; tell the sim so it can scale the
-  // existing bodies rather than teleport them.
   resize(state.worldW, state.worldH);
   drawOnce();
   highlightAspect();
@@ -296,7 +295,6 @@ function wire() {
     state.scene.spec[S.count] = v;
     specView()[S.count] = v;
     document.getElementById('countVal').textContent = Math.round(v * 100) + '%';
-    // Density is read once, at init, so the scene has to restart to change it.
     init(state.worldW, state.worldH, state.scene.seed);
     drawOnce();
   });
@@ -305,7 +303,6 @@ function wire() {
     b.addEventListener('click', () => {
       const a = parseFloat(b.dataset.aspect);
       if (a === 0) {
-        // Fill: match the stage's own aspect.
         const stage = document.querySelector('.stage');
         const r = stage.getBoundingClientRect();
         setAspect(r.width / r.height, 'fill');
@@ -359,8 +356,6 @@ function wire() {
     else if (e.key === 'r') rerollStyle();
   });
 
-  // The FPS readout is the one thing in the readout that changes without
-  // an event; updating it once a second is plenty.
   setInterval(() => {
     if (state.scene) renderReadout();
   }, 1000);
