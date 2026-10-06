@@ -26,14 +26,10 @@ const PRIM: usize = 10;
 const NPAL: usize = 5;
 const BASE_H: f32 = 1000.0;
 
-// Flow's raster. 200x200 is small enough to simulate at 60Hz in wasm
-// and big enough that the pattern reads as structure, not noise.
 const RW: usize = 200;
 const RH: usize = 200;
 const RD_N: usize = RW * RH;
 
-// Sand's grid. Cells are ~11 world units tall, which reads as grains at
-// any sane display size.
 const SAND_W: usize = 90;
 const SAND_H: usize = 90;
 const SAND_N: usize = SAND_W * SAND_H;
@@ -68,14 +64,12 @@ const S_DENSITY: usize = 21;
 const S_SCALE: usize   = 22;
 const S_ASPECT: usize  = 23;
 
-/// How many bodies each style wants at full density. `S_COUNT` scales
-/// these. The arrays are always allocated for the maximum.
 const STYLE_MAX: [usize; 5] = [
     420,     // Body
     900,     // Cloth
     460,     // Flock
     SAND_N,  // Sand
-    0,       // Flow: no particles
+    0,       // Flow
 ];
 
 // ------------------------------------------------------------------- rng
@@ -274,55 +268,64 @@ impl World {
 }
 
 // ============================================================ BODY =========
+//
+// Chaotic N-body. Every body attracts every other. There is no central
+// star; all masses are in a narrow range so no single body dominates the
+// dynamics. The initial disk has a little rotation, and gravity then does
+// the rest: the cloud collapses toward the centre, the bodies swing past
+// each other, some are flung out and wrapped back around, and the whole
+// thing churns forever.
+//
+// This is why there is no drag and no reset: an N-body system with more
+// than two similar masses has no stable configuration. It is chaotic by
+// nature, and the churn is the picture.
 
 fn body_init(w: &mut World) {
     let n = w.np;
-    if n == 0 { return; }
     let cx = w.w * 0.5;
     let cy = w.h * 0.5;
-
-    w.px[0] = cx; w.py[0] = cy;
-    w.ox[0] = cx; w.oy[0] = cy;
-    w.vx[0] = 0.0; w.vy[0] = 0.0;
-    w.pm[0] = 1400.0;
-    w.ptone[0] = 1.0;
-    w.pinned[0] = 0;
-
-    let g = 520.0;
-    let r_max = w.w.min(w.h) * 0.44;
-
-    for i in 1..n {
+    let r_max = w.w.min(w.h) * 0.42;
+    for i in 0..n {
         let a = rnd(&mut w.rng) * TAU;
-        let r = (60.0 + rnd(&mut w.rng).sqrt() * r_max).max(60.0);
-        let x = cx + a.cos() * r;
-        let y = cy + a.sin() * r;
-        w.px[i] = x; w.py[i] = y;
-        w.ox[i] = x; w.oy[i] = y;
-        let v = (g * w.pm[0] / r).sqrt() * 0.94;
-        let jitter = 6.0;
-        w.vx[i] = -a.sin() * v + rr(&mut w.rng, -jitter, jitter);
-        w.vy[i] =  a.cos() * v + rr(&mut w.rng, -jitter, jitter);
-        w.pm[i] = rr(&mut w.rng, 0.4, 2.4);
-        w.ptone[i] = (r / r_max).clamp(0.0, 1.0);
+        let r = rnd(&mut w.rng).sqrt() * r_max;
+        w.px[i] = cx + a.cos() * r;
+        w.py[i] = cy + a.sin() * r;
+        w.ox[i] = w.px[i];
+        w.oy[i] = w.py[i];
+        // A small tangential velocity with a random direction offset, so
+        // the initial disk has some rotation but no orbit is circular.
+        let speed = rr(&mut w.rng, 5.0, 40.0);
+        let dir = a + TAU * 0.25 + rr(&mut w.rng, -0.9, 0.9);
+        w.vx[i] = dir.cos() * speed;
+        w.vy[i] = dir.sin() * speed;
+        w.pm[i] = rr(&mut w.rng, 8.0, 20.0);
+        w.ptone[i] = rnd(&mut w.rng);
     }
 }
 
 fn body_step(w: &mut World, dt: f32) {
     let n = w.np;
     if n < 2 { return; }
-    let g = 520.0;
-    let soft = 14.0;
+    // G is tuned so the initial cloud's free-fall time is roughly ten to
+    // fifteen seconds: fast enough to be visible, slow enough to read.
+    let g = 200.0;
+    // Softening keeps two bodies that happen to meet from producing a
+    // singularity. Larger than a body's visual radius, so the picture
+    // never shows a division by zero either.
+    let soft = 22.0;
     let soft2 = soft * soft;
-    let drag = w.spec[S_DRAG] * 0.06;
 
     for i in 0..n {
         w.ax[i] = 0.0;
         w.ay[i] = 0.0;
     }
 
+    // Pairwise gravity. The force is symmetric, so one pass over i<j
+    // accumulates both halves.
     for i in 0..n {
         let xi = w.px[i];
         let yi = w.py[i];
+        let mi = w.pm[i];
         for j in (i + 1)..n {
             let dx = w.px[j] - xi;
             let dy = w.py[j] - yi;
@@ -330,31 +333,34 @@ fn body_step(w: &mut World, dt: f32) {
             let inv_d = 1.0 / d2.sqrt();
             let inv_d3 = inv_d / d2;
             let f = g * inv_d3;
-            let fmj = f * w.pm[j];
-            let fmi = f * w.pm[i];
-            w.ax[i] += dx * fmj;
-            w.ay[i] += dy * fmj;
-            w.ax[j] -= dx * fmi;
-            w.ay[j] -= dy * fmi;
+            let fj = f * w.pm[j];
+            let fi = f * mi;
+            w.ax[i] += dx * fj;
+            w.ay[i] += dy * fj;
+            w.ax[j] -= dx * fi;
+            w.ay[j] -= dy * fi;
         }
     }
 
-    let df = (1.0 - drag * dt).max(0.0);
     for i in 0..n {
-        if w.pinned[i] != 0 { continue; }
-        w.vx[i] = (w.vx[i] + w.ax[i] * dt) * df;
-        w.vy[i] = (w.vy[i] + w.ay[i] * dt) * df;
+        w.vx[i] += w.ax[i] * dt;
+        w.vy[i] += w.ay[i] * dt;
         w.ox[i] = w.px[i];
         w.oy[i] = w.py[i];
         w.px[i] += w.vx[i] * dt;
         w.py[i] += w.vy[i] * dt;
     }
 
+    // Toroidal wrap. Nothing accumulates at the edges, and anything
+    // ejected comes back to disturb the cluster again -- which is what
+    // keeps the system from settling.
+    let ww = w.w + 80.0;
+    let hh = w.h + 80.0;
     for i in 0..n {
-        if w.px[i] < -40.0 { w.px[i] += w.w + 80.0; w.ox[i] += w.w + 80.0; }
-        if w.px[i] > w.w + 40.0 { w.px[i] -= w.w + 80.0; w.ox[i] -= w.w + 80.0; }
-        if w.py[i] < -40.0 { w.py[i] += w.h + 80.0; w.oy[i] += w.h + 80.0; }
-        if w.py[i] > w.h + 40.0 { w.py[i] -= w.h + 80.0; w.oy[i] -= w.h + 80.0; }
+        if w.px[i] < -40.0 { w.px[i] += ww; w.ox[i] += ww; }
+        if w.px[i] > w.w + 40.0 { w.px[i] -= ww; w.ox[i] -= ww; }
+        if w.py[i] < -40.0 { w.py[i] += hh; w.oy[i] += hh; }
+        if w.py[i] > w.h + 40.0 { w.py[i] -= hh; w.oy[i] -= hh; }
     }
 }
 
@@ -364,23 +370,28 @@ fn body_emit(w: &mut World) {
     let size = w.spec[S_SIZE];
     let trail = w.spec[S_TRAIL];
 
+    // Trails. A body that has just wrapped has moved most of the frame in
+    // one step; drawing its trail would smear a line across the picture,
+    // so those steps are skipped.
     if trail > 0.02 {
-        for i in 1..n {
+        for i in 0..n {
             let dx = w.px[i] - w.ox[i];
             let dy = w.py[i] - w.oy[i];
+            if dx.abs() > w.w * 0.4 || dy.abs() > w.h * 0.4 { continue; }
             if dx * dx + dy * dy < 0.5 { continue; }
             let (r, g, b, a) = pal(w, w.ptone[i], bri * 0.5 * trail);
-            let m = (w.pm[i] * 0.5 + 0.6).min(1.3);
-            w.prim_line(w.ox[i], w.oy[i], w.px[i], w.py[i], r, g, b, a, size * 0.5 * m);
+            w.prim_line(w.ox[i], w.oy[i], w.px[i], w.py[i], r, g, b, a, size * 0.5);
         }
     }
 
+    // Bodies. Colour by current speed: bodies flung around are bright,
+    // ones settled near the centre are dim. This is the figure the eye
+    // reads as "the system is alive".
     for i in 0..n {
-        let m = w.pm[i];
-        let t = if i == 0 { 0.98 } else { w.ptone[i] * 0.7 };
+        let sp = (w.vx[i] * w.vx[i] + w.vy[i] * w.vy[i]).sqrt();
+        let t = (w.ptone[i] * 0.4 + (sp / 220.0).min(1.0) * 0.6).clamp(0.0, 1.0);
         let (r, g, b, a) = pal(w, t, bri);
-        let sz = if i == 0 { size * 4.5 } else { size * (0.6 + m * 0.35) };
-        w.prim_dot(w.px[i], w.py[i], r, g, b, a, sz);
+        w.prim_dot(w.px[i], w.py[i], r, g, b, a, size * 3.2);
     }
 }
 
@@ -427,23 +438,27 @@ fn cloth_init(w: &mut World) {
 fn cloth_step(w: &mut World, dt: f32) {
     let n = w.np;
     if n == 0 { return; }
-    // Gravity, in units per second squared. The Verlet update below adds
-    // `a * h * h` per frame, and `h` is scaled so that at 60 fps it comes
-    // out at 1.0 -- so the number here is very nearly the number of world
-    // units a body falls in its first frame. The sheet is ~620 units
-    // tall, so anything above about 20 will throw it off-screen before
-    // the constraint solver can catch it.
+    // Gravity, in units per frame at 60fps, scaled the same way the
+    // position update below uses h * h. The sheet is ~620 units tall, so
+    // this has to stay near single digits or the sheet falls off-screen
+    // before the constraints can catch it.
     let g = w.spec[S_GRAV] * 8.0;
-    let wind = w.spec[S_WIND];
+
+    // The wind the scene asked for, plus an intrinsic breeze that never
+    // stops. Without the second term, a scene with wind=0 settles within
+    // a second or two and the sheet hangs still forever. Two sine terms
+    // of different periods, so the pattern does not repeat on a short
+    // cycle either.
+    let asked = w.spec[S_WIND];
+    let breeze = (w.t * 0.42).sin() * 0.55 + (w.t * 1.37).sin() * 0.22;
+    let wind = asked * 0.65 + breeze;
+
     let damp = 1.0 - w.spec[S_DRAG] * 0.08;
     let h = dt * 60.0;
     let hh = h * h;
 
     for i in 0..n {
         if w.pinned[i] != 0 { continue; }
-        // Wind varies with position, so the sheet ripples instead of
-        // being pushed bodily. Scaled to match gravity: a wind of 1.0
-        // and a gravity of 1.0 should push the sheet about equally.
         let z = w.py[i] * 0.007 + w.t * 1.3;
         let wx = wind * (1.0 + 0.6 * (z).sin()) * 8.0;
         let wy = wind * 0.3 * (z * 0.7 + 1.7).cos() * 8.0;
@@ -674,10 +689,18 @@ fn flock_emit(w: &mut World) {
 }
 
 // ============================================================ SAND =========
+//
+// Falling-sand cellular automaton. The obstacle course is built once at
+// init; the source at the top emits grains continuously; the bottom of
+// the pile is drained continuously. The pile is therefore never in a
+// settled state: it grows from the top, shrinks from the bottom, and the
+// shape is always in flux.
 
 fn sand_init(w: &mut World) {
     for i in 0..SAND_N { w.sand[i] = CELL_EMPTY; }
 
+    // Source: a horizontal bar with a hole. Grains fall through the hole
+    // in a stream.
     let sr = 6;
     let hole_l = SAND_W * 4 / 10;
     let hole_r = SAND_W * 6 / 10;
@@ -687,6 +710,8 @@ fn sand_init(w: &mut World) {
         }
     }
 
+    // Obstacle: a diagonal plate, so the falling stream splits into two
+    // and the two streams pile against each other.
     let x0 = SAND_W / 6;
     let y0 = SAND_H / 2 - 10;
     for k in 0..(SAND_W * 2 / 3) {
@@ -697,10 +722,13 @@ fn sand_init(w: &mut World) {
         }
     }
 
+    // Floor.
     for c in 0..SAND_W {
         w.sand[(SAND_H - 1) * SAND_W + c] = CELL_WALL;
     }
 
+    // Some initial sand so the scene starts with motion rather than an
+    // empty grid filling in.
     for _ in 0..(SAND_W * 3) {
         let c = (rnd(&mut w.rng) * SAND_W as f32) as usize % SAND_W;
         let r = (rnd(&mut w.rng) * (SAND_H / 3) as f32) as usize;
@@ -770,6 +798,7 @@ fn sand_step(w: &mut World, _dt: f32) {
         }
     }
 
+    // Emit new grains from the source gap.
     let sr = 7;
     let c0 = SAND_W * 4 / 10;
     let c1 = SAND_W * 6 / 10;
@@ -777,6 +806,17 @@ fn sand_step(w: &mut World, _dt: f32) {
         let i = sr * SAND_W + c;
         if w.sand_out[i] == CELL_EMPTY && rnd(&mut w.rng) < 0.35 {
             w.sand_out[i] = CELL_SAND;
+        }
+    }
+
+    // Drain the bottom. The cell just above the floor loses sand to a
+    // constant trickle, so the pile never stops moving and never fills
+    // the frame. Without this the source fills the grid in under a
+    // minute and the picture becomes a still life.
+    let bottom = (SAND_H - 2) * SAND_W;
+    for c in 0..SAND_W {
+        if w.sand_out[bottom + c] == CELL_SAND && rnd(&mut w.rng) < 0.05 {
+            w.sand_out[bottom + c] = CELL_EMPTY;
         }
     }
 
@@ -813,6 +853,13 @@ fn sand_emit(w: &mut World) {
 }
 
 // ============================================================ FLOW =========
+//
+// Gray-Scott reaction-diffusion. The pattern is a fixed point if f and k
+// are fixed; the whole trick for keeping it moving is to let f and k
+// wander. The two wander on different periods, tracing a Lissajous path
+// through the region of parameter space that produces spots, worms,
+// stripes and back. The pattern is then never allowed to reach a steady
+// state; it is always reorganising itself.
 
 fn flow_init(w: &mut World) {
     unsafe {
@@ -839,8 +886,14 @@ fn flow_init(w: &mut World) {
 
 fn flow_step(w: &mut World, _dt: f32) {
     unsafe {
-        let f = 0.036 + w.spec[S_GRAV] * 0.014;
-        let k = 0.061 + w.spec[S_WIND] * 0.010;
+        // f and k drift on a Lissajous path with periods of ~21s and
+        // ~30s. The scene's own grav and wind draw the centre of that
+        // path. The result is that the pattern cycles through regimes:
+        // spots that grow, worm out, merge into stripes, fragment.
+        let phase = w.t * 0.30;
+        let f = 0.038 + w.spec[S_GRAV] * 0.014 + phase.sin() * 0.010;
+        let k = 0.061 + w.spec[S_WIND] * 0.010 + (phase * 0.7 + 1.1).cos() * 0.0025;
+
         let da = 1.0;
         let db = 0.5;
         let dt = 1.0;
