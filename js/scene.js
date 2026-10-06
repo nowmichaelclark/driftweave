@@ -1,232 +1,143 @@
-// The composer. A scene is which simulation to run, plus the numbers that
-// simulation needs, plus a palette.
+// The composer. A scene is which simulation to run, plus the numbers
+// that simulation needs, plus a palette.
 //
-// The five styles are genuinely different models -- see core/src/lib.rs.
-// What the spec fields *mean* is different per style, which is why each
-// one's draw below is a full override of the shared spec rather than a
-// delta to it. The RANGES table is the code format's, not the style's;
-// the style decides what its own values should be.
+// Six styles, all built on the same 16-float spec. The style's own draw()
+// is the authority on what each field means for it; anything the style
+// does not care about is left at whatever the previous field's default
+// was, which for the Rust core is harmless.
 
 import { Rng, randomSeed, seedName } from './rng.js';
 
-// Twenty-four floats, fixed layout. Index constants are exported so the
-// UI and the code format can both name them.
-export const NSPEC = 24;
+export const NSPEC = 16;
 
 export const S = {
-  style:   0,
-  count:   1,
-  grav:    2,
-  drag:    3,
-  bounce:  4,
-  wind:    5,
-  swirl:   6,
-  jitter:  7,
-  mutual:  8,
-  spacing: 9,
-  k:       10,
-  fields:  11,
-  size:    12,
-  trail:   13,
-  pulse:   14,
-  tempo:   15,
-  hue:     16,
-  sat:     17,
-  bri:     18,
-  wall:    19,
-  sub:     20,
-  density: 21,
-  scale:   22,
-  aspect:  23,
+  style: 0, count: 1, size: 2, alpha: 3,
+  speed: 4, grav: 5, wind: 6, swirl: 7,
+  spin: 8, jitter: 9, trail: 10, cohere: 11,
+  hue: 12, sat: 13, bri: 14, walls: 15,
 };
 
-// The range each spec value can be encoded in. The share code quantises
-// to a byte inside this range, so nothing can go out of bounds and come
-// back different. These are the code format's bounds, not the style's:
-// a style can use a narrower range, but nothing can exceed these.
 export const RANGES = [
-  [0, 4],        // style index (five styles now, room for three more)
-  [0, 1],        // count, as a fraction of the style's maximum
-  [-1, 1],       // gravity / flow f-offset
-  [0, 3],        // drag
-  [0, 1],        // bounce
-  [-1, 1],       // wind / flow k-offset
-  [-1, 1],       // swirl (unused by the current styles, kept for future)
-  [0, 1],        // jitter
-  [0, 1],        // mutual
-  [0, 40],       // spacing
-  [0, 2],        // spring stiffness
-  [0, 6],        // attractor fields
-  [0.5, 10],     // body size
-  [0, 1],        // trail
-  [0, 1],        // pulse strength
-  [0.25, 4],     // pulse tempo
-  [0, 1],        // hue
-  [0, 1],        // saturation
-  [0, 1],        // brightness
-  [0, 3],        // wall mode
-  [1, 4],        // physics substeps
-  [0, 1],        // density (UI hint)
-  [0, 1],        // scale (reserved)
-  [0.25, 4],     // author's aspect, width/height
+  [0, 5],   // style
+  [0, 1],   // count
+  [0, 1],   // size
+  [0, 1],   // alpha
+  [0, 1],   // speed
+  [0, 1],   // grav
+  [0, 1],   // wind
+  [0, 1],   // swirl
+  [0, 1],   // spin
+  [0, 1],   // jitter
+  [0, 1],   // trail
+  [0, 1],   // cohere
+  [0, 1],   // hue
+  [0, 1],   // sat
+  [0, 1],   // bri
+  [0, 3],   // walls
 ];
 
-// Wall modes, named for the readout. Kept as an exported list so a UI
-// can show them without duplicating the strings.
-export const WALLS = ['bounce', 'wrap', 'recycle', 'soft'];
+export const WALLS = ['wrap', 'bounce', 'soft', 'none'];
 
-// Five styles. Each one's draw() sets every field the core reads for it;
-// anything the core ignores for that style is set to a harmless value so
-// the spec is always fully populated.
+// Six styles. Each style's draw() writes every field it cares about; the
+// remaining fields are set to zero by the initial Float32Array, which is
+// the correct default for the ones that are unused.
 export const STYLES = [
   {
-    id: 'body',
-    label: 'Body',
-    // N-body gravitational. Slow, evolving, no repetition. The disk is
-    // seeded slightly sub-circular so it spirals inward over minutes.
-    hue: [[0.02, 0.10], [0.55, 0.65], [0.78, 0.90]],
+    id: 'orbit', label: 'Orbit',
+    // Chaotic N-body with no central mass. Bodies start on a slowly
+    // rotating disk and are then governed only by their mutual gravity.
+    // The system is chaotic by nature -- there is no equilibrium state
+    // for more than two similar masses -- so it never comes to rest.
+    hue: [[0.02, 0.10], [0.55, 0.65], [0.78, 0.90], [0.42, 0.52]],
     draw(r, spec) {
-      spec[S.count]   = r.range(0.35, 1.00);
-      spec[S.grav]    = 0;
-      spec[S.drag]    = r.range(0.05, 0.35);
-      spec[S.trail]   = r.range(0.35, 0.95);
-      spec[S.size]    = r.range(1.6, 3.2);
-      spec[S.jitter]  = 0;
-      spec[S.wind]    = 0;
-      spec[S.swirl]   = 0;
-      spec[S.k]       = 0;
-      spec[S.spacing] = 0;
-      spec[S.wall]    = 1;
-      spec[S.sub]     = r.int(1, 2);
-      spec[S.fields]  = 0;
-      spec[S.bounce]  = 0;
-      spec[S.mutual]  = 0;
-      spec[S.pulse]   = 0;
-      spec[S.tempo]   = 1;
-      spec[S.density] = spec[S.count];
+      spec[S.count] = r.range(0.4, 1.0);
+      spec[S.size] = r.range(0.3, 0.9);
+      spec[S.alpha] = r.range(0.6, 1.0);
+      spec[S.trail] = r.range(0.5, 1.0);
+      spec[S.walls] = 0;
     },
   },
   {
-    id: 'cloth',
-    label: 'Cloth',
-    // Verlet sheet, pinned at the top, dropped into wind. Reads as
-    // fabric within a second of loading -- a flap no particle system
-    // can imitate.
-    hue: [[0.00, 0.08], [0.28, 0.42], [0.52, 0.62], [0.86, 0.98]],
-    draw(r, spec) {
-      spec[S.count]   = r.range(0.55, 1.00);
-      spec[S.grav]    = r.range(0.45, 0.95);
-      spec[S.wind]    = r.range(-0.9, 0.9);
-      spec[S.drag]    = r.range(0.4, 0.9);
-      spec[S.k]       = r.range(0.3, 1.0);
-      spec[S.trail]   = r.range(0, 0.35);
-      spec[S.size]    = r.range(1.2, 2.4);
-      spec[S.bounce]  = 0;
-      spec[S.jitter]  = 0;
-      spec[S.swirl]   = 0;
-      spec[S.spacing] = 0;
-      spec[S.wall]    = 3;
-      spec[S.sub]     = r.int(2, 3);
-      spec[S.fields]  = 0;
-      spec[S.mutual]  = 0;
-      spec[S.pulse]   = 0;
-      spec[S.tempo]   = 1;
-      spec[S.density] = spec[S.count];
-    },
-  },
-  {
-    id: 'flock',
-    label: 'Flock',
-    // Boids. Three rules, no forces. Moves like a living thing, and is
-    // unmistakably not the N-body simulation however similar it looks
-    // in a still frame.
+    id: 'flock', label: 'Flock',
+    // Boids. Three local rules, no global force; the flock's shape is
+    // emergent. A slowly drifting wind keeps the swarm from ever being
+    // able to align perfectly.
     hue: [[0.00, 0.10], [0.32, 0.46], [0.58, 0.68], [0.88, 1.00]],
     draw(r, spec) {
-      spec[S.count]   = r.range(0.35, 0.95);
-      spec[S.drag]    = r.range(0.05, 0.35);
-      spec[S.trail]   = r.range(0.15, 0.75);
-      spec[S.size]    = r.range(1.6, 3.0);
-      spec[S.grav]    = 0;
-      spec[S.wind]    = 0;
-      spec[S.swirl]   = 0;
-      spec[S.jitter]  = 0;
-      spec[S.k]       = 0;
-      spec[S.spacing] = 0;
-      spec[S.wall]    = 3;
-      spec[S.sub]     = r.int(1, 2);
-      spec[S.fields]  = 0;
-      spec[S.bounce]  = 0;
-      spec[S.mutual]  = 0;
-      spec[S.pulse]   = 0;
-      spec[S.tempo]   = 1;
-      spec[S.density] = spec[S.count];
+      spec[S.count] = r.range(0.4, 0.9);
+      spec[S.size] = r.range(0.25, 0.6);
+      spec[S.alpha] = r.range(0.7, 1.0);
+      spec[S.trail] = r.range(0.2, 0.7);
+      spec[S.cohere] = 1.0;
+      spec[S.walls] = 2;
     },
   },
   {
-    id: 'sand',
-    label: 'Sand',
-    // Falling-sand cellular automaton. Discrete, granular, and the only
-    // one here where the picture accumulates: over a minute the pile
-    // grows and the shape is different every seed.
-    hue: [[0.06, 0.14], [0.02, 0.08], [0.55, 0.62]],
+    id: 'wells', label: 'Wells',
+    // Three attractors move on independent Lissajous paths; the middle
+    // one repels. Particles swirl around the moving wells and are
+    // caught in the changing fields, so no configuration is ever stable.
+    hue: [[0.50, 0.65], [0.72, 0.85], [0.00, 0.12], [0.28, 0.42]],
     draw(r, spec) {
-      spec[S.count]   = 1;
-      spec[S.trail]   = 0;
-      spec[S.size]    = 1;
-      spec[S.grav]    = 0;
-      spec[S.wind]    = 0;
-      spec[S.swirl]   = 0;
-      spec[S.jitter]  = 0;
-      spec[S.k]       = 0;
-      spec[S.spacing] = 0;
-      spec[S.wall]    = 0;
-      spec[S.sub]     = 1;
-      spec[S.fields]  = 0;
-      spec[S.bounce]  = 0;
-      spec[S.mutual]  = 0;
-      spec[S.pulse]   = 0;
-      spec[S.tempo]   = 1;
-      spec[S.density] = 1;
+      spec[S.count] = r.range(0.5, 1.0);
+      spec[S.size] = r.range(0.2, 0.5);
+      spec[S.alpha] = r.range(0.5, 0.9);
+      spec[S.speed] = r.range(0.3, 0.8);
+      spec[S.swirl] = r.range(0.3, 0.9);
+      spec[S.spin] = r.range(0.3, 1.0);
+      spec[S.trail] = r.range(0.5, 1.0);
+      spec[S.walls] = 0;
     },
   },
   {
-    id: 'flow',
-    label: 'Flow',
-    // Gray-Scott reaction-diffusion. Not particles at all; the output
-    // is a raster. The two parameters wander through the region of
-    // (f, k) space that produces wormlike patterns rather than spots
-    // or stripes, because worms are the ones that keep moving.
+    id: 'flow', label: 'Flow',
+    // Particles following a smooth vector field whose angle depends on
+    // position AND on time. The field is never the same twice, so
+    // particles have no fixed point to settle into.
     hue: [[0.42, 0.56], [0.00, 0.08], [0.72, 0.86], [0.28, 0.42]],
     draw(r, spec) {
-      spec[S.grav]    = r.range(-0.15, 0.15);
-      spec[S.wind]    = r.range(-0.15, 0.15);
-      spec[S.count]   = 1;
-      spec[S.trail]   = 0;
-      spec[S.size]    = 1;
-      spec[S.drag]    = 0;
-      spec[S.bounce]  = 0;
-      spec[S.swirl]   = 0;
-      spec[S.jitter]  = 0;
-      spec[S.k]       = 0;
-      spec[S.spacing] = 0;
-      spec[S.wall]    = 0;
-      spec[S.sub]     = 1;
-      spec[S.fields]  = 0;
-      spec[S.mutual]  = 0;
-      spec[S.pulse]   = 0;
-      spec[S.tempo]   = 1;
-      spec[S.density] = 1;
+      spec[S.count] = r.range(0.6, 1.0);
+      spec[S.size] = r.range(0.3, 0.6);
+      spec[S.alpha] = r.range(0.6, 1.0);
+      spec[S.speed] = r.range(0.4, 1.0);
+      spec[S.trail] = r.range(0.6, 1.0);
+      spec[S.walls] = 0;
+    },
+  },
+  {
+    id: 'chain', label: 'Chain',
+    // Spring networks hanging from points along the top edge. Gravity
+    // holds them down; a wind that varies in time and space keeps them
+    // swaying. Even at wind=0 there is an ambient force, so the chains
+    // never settle.
+    hue: [[0.00, 0.08], [0.28, 0.42], [0.52, 0.62], [0.86, 0.98]],
+    draw(r, spec) {
+      spec[S.count] = r.range(0.5, 0.9);
+      spec[S.size] = r.range(0.35, 0.7);
+      spec[S.alpha] = r.range(0.7, 1.0);
+      spec[S.grav] = 0.5;
+      spec[S.wind] = r.range(0.3, 1.0);
+      spec[S.trail] = r.range(0.1, 0.5);
+      spec[S.walls] = 3;
+    },
+  },
+  {
+    id: 'repel', label: 'Repel',
+    // Mutual repulsion plus a central force that alternates between
+    // attracting and repelling on a ~6 second cycle. The cloud is
+    // forever expanding, contracting, and finding a new shape.
+    hue: [[0.08, 0.18], [0.55, 0.65], [0.85, 0.95]],
+    draw(r, spec) {
+      spec[S.count] = r.range(0.5, 1.0);
+      spec[S.size] = r.range(0.25, 0.6);
+      spec[S.alpha] = r.range(0.5, 0.9);
+      spec[S.trail] = r.range(0.4, 0.9);
+      spec[S.cohere] = r.range(0.2, 1.0);
+      spec[S.walls] = 2;
     },
   },
 ];
 
-// Draw a scene. The style is either drawn from the seed or forced with
-// `styleIndex`. The spec is fully populated -- every field -- before
-// returning, so the core sees a well-formed recipe on every call.
-//
-// The draw order is deterministic: the same seed with the same style
-// produces the same spec, and therefore the same scene. That is what
-// makes a share code enough to carry one.
 export function newSpec(seed = randomSeed(), styleIndex = null) {
   const r = new Rng(seed);
   const style = styleIndex == null
@@ -237,41 +148,18 @@ export function newSpec(seed = randomSeed(), styleIndex = null) {
   const spec = new Float32Array(NSPEC);
   spec[S.style] = style;
 
-  // The style sets everything it cares about.
   s.draw(r, spec);
 
-  // Palette. One hue family per style, so two Bodies never land on the
-  // same colour by accident, and the same hue family in different
-  // families of the style's own list reads as different moods.
   const family = r.pick(s.hue);
   spec[S.hue] = r.range(family[0], family[1]);
   spec[S.sat] = r.range(0.55, 0.95);
   spec[S.bri] = r.range(0.70, 1.00);
 
-  // The aspect is the author's preference. The UI can override; the
-  // code carries it so a scene shared from a 9:16 phone opens as a
-  // 9:16 scene by default.
-  spec[S.aspect] = 1;
-
   return { spec, style, seed: seed >>> 0, name: seedName(seed >>> 0) };
-}
-
-// A scene bundled with the seed and name it carries through save and
-// share. The spec is a plain array here, not a Float32Array, so it
-// survives JSON round-trips intact.
-export function sceneOf(spec, seed, name) {
-  return {
-    spec: Array.from(spec),
-    seed: seed >>> 0,
-    name: name || seedName(seed >>> 0),
-    style: Math.round(spec[S.style]),
-  };
 }
 
 // ------------------------------------------------------------ share codes
 
-// Crockford base32: no I, L, O or U, so there is no 1/l or 0/O
-// confusion, and it is case-insensitive.
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const DECODE = (() => {
   const m = {};
@@ -280,10 +168,9 @@ const DECODE = (() => {
   return m;
 })();
 
-const FORMAT = 1;
-export const PREFIX = 'DW1-';
+const FORMAT = 2;
+export const PREFIX = 'DW2-';
 
-// Quantise a spec value into a byte, inside its declared range.
 function quantise(v, i) {
   const [lo, hi] = RANGES[i];
   const t = hi > lo ? (v - lo) / (hi - lo) : 0;
@@ -295,9 +182,6 @@ function dequantise(b, i) {
   return lo + (b / 255) * (hi - lo);
 }
 
-// Fletcher-16: catches transpositions, which a plain sum does not, and
-// transposing two characters is exactly what happens when a code is
-// copied out by hand.
 function checksum(bytes) {
   let a = 0, b = 0;
   for (const x of bytes) {
@@ -338,7 +222,6 @@ function fromBase32(text) {
   return Uint8Array.from(out);
 }
 
-// encodeScene: version, flags, name (if custom), seed, spec, checksum.
 export function encodeScene(scene) {
   const name = (scene.name || '').slice(0, 24);
   const generated = seedName(scene.seed >>> 0);
@@ -406,8 +289,6 @@ export function decodeScene(code) {
   };
 }
 
-// Which kind of code is this? Only scenes for now; kept as a function
-// so a future album code has somewhere to land.
 export function codeKind(text) {
   const t = String(text || '').trim().toUpperCase();
   if (t.startsWith(PREFIX)) return 'scene';
