@@ -1,0 +1,6 @@
+# Build output. Cloudflare's build.sh regenerates this every deploy;
+# committing it would mean shipping a stale simulation.
+js/driftweave.wasm
+core/target/
+core/pkg/
+.DS_Store
