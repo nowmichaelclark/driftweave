@@ -696,8 +696,8 @@ fn emit(w: &mut World) {
         // A stretched link brightens toward the top of the ramp, so the
         // picture shows where the tension is.
         let t = (w.ltone[l] * 0.65 + stretch * 1.6).clamp(0.0, 1.0);
-        let (r, g, b, al) = pal(w, t, 0.55 * bri);
-        w.add_prim(1.0, w.px[a], w.py[a], w.px[b], w.py[b], r, g, b, al, 1.0);
+        let (cr, cg, cb, ca) = pal(w, t, 0.55 * bri);
+         w.add_prim(1.0, w.px[a], w.py[a], w.px[b], w.py[b], cr, cg, cb, ca, 1.0);
     }
 
     // Bodies.
