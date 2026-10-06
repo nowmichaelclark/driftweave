@@ -1,20 +1,17 @@
 // Driftweave: the entry point.
 //
-// The recipe is a 24-float spec and a seed. The browser writes the spec,
-// the Rust core simulates it and hands back either a draw list or a
-// raster, this file paints it. Everything else -- buttons, sliders, code
-// sharing, saves -- is plumbing.
+// The recipe is a 16-float spec and a seed. The browser writes the spec,
+// the Rust core simulates it and hands back an array of particles, this
+// file paints it. Everything else -- buttons, sliders, code sharing,
+// saves -- is plumbing.
 
-import { loadCore, spec as specView, prims, init, resize, step,
-         isRaster, rasterView, rasterW, rasterH } from './core.js';
-import { newSpec, sceneOf, encodeScene, decodeScene, codeKind, STYLES, S, RANGES, WALLS } from './scene.js';
-import { paint, paintRaster } from './render.js';
+import { loadCore, specView, partsView, init, resize, step } from './core.js';
+import { newSpec, encodeScene, decodeScene, codeKind, STYLES, S, RANGES, WALLS } from './scene.js';
+import { paint } from './render.js';
 import * as store from './storage.js';
 
 const canvas = document.getElementById('view');
 const ctx = canvas.getContext('2d');
-
-// World is always 1000 units tall. Width follows the aspect.
 const WORLD_H = 1000;
 
 const state = {
@@ -25,14 +22,12 @@ const state = {
   aspectMode: 'fixed',
   worldW: 1000,
   worldH: WORLD_H,
-  raf: null,
   lastT: 0,
   fpsAvg: 60,
   history: [],
   historyIndex: -1,
+  errorShown: false,
 };
-
-// --------------------------------------------------------------- wasm load
 
 async function boot() {
   try {
@@ -55,14 +50,11 @@ async function boot() {
   requestAnimationFrame(loop);
 }
 
-// --------------------------------------------------------------- the frame
-
 function fitCanvas() {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const baseH = 720;
   const h = Math.round(baseH * dpr);
   const w = Math.round(baseH * state.aspect * dpr);
-
   state.worldH = WORLD_H;
   state.worldW = WORLD_H * state.aspect;
   canvas.width = w;
@@ -70,34 +62,43 @@ function fitCanvas() {
 }
 
 function applySpec() {
-  const view = specView();
-  const src = state.scene.spec;
-  for (let i = 0; i < src.length; i++) view[i] = src[i];
+  const v = specView();
+  const s = state.scene.spec;
+  for (let i = 0; i < s.length; i++) v[i] = s[i];
 }
 
 function drawOnce() {
-  // Two output modes: a draw list of dots/lines/rects for the particle
-  // styles, or a raster image for Flow. The core tells us which.
-  if (isRaster()) {
-    paintRaster(ctx, rasterView(), rasterW(), rasterH(), canvas.width, canvas.height);
-  } else {
-    paint(ctx, prims(), state.worldW, state.worldH, canvas.width, canvas.height);
-  }
+  paint(ctx, partsView(), state.worldW, state.worldH, canvas.width, canvas.height);
 }
 
+const playBtn = document.getElementById('playBtn');
+const playLabel = document.getElementById('playLabel');
+
 function loop(now) {
-  state.raf = requestAnimationFrame(loop);
+  requestAnimationFrame(loop);
   if (!state.playing || !state.ready) return;
 
-  const dt = Math.min(0.05, (now - state.lastT) / 1000 || 0.016);
+  const dt = Math.min(0.033, (now - state.lastT) / 1000 || 0.016);
   state.lastT = now;
   state.fpsAvg = state.fpsAvg * 0.92 + (1 / Math.max(0.001, dt)) * 0.08;
 
-  step(dt);
-  drawOnce();
+  try {
+    step(dt);
+    drawOnce();
+  } catch (err) {
+    console.error('Simulation error:', err);
+    if (!state.errorShown) {
+      state.errorShown = true;
+      state.playing = false;
+      playBtn.setAttribute('aria-pressed', 'false');
+      playLabel.textContent = 'Play';
+      toast('Simulation error — see console');
+    }
+    return;
+  }
 }
 
-// --------------------------------------------------------------- actions
+// -------------------------------------------------------------- actions
 
 function play() {
   if (!state.ready) return;
@@ -178,24 +179,21 @@ function setAspect(a, mode) {
   highlightAspect();
 }
 
-// -------------------------------------------------------------- rendering
-
-const playBtn = document.getElementById('playBtn');
-const playLabel = document.getElementById('playLabel');
+// ------------------------------------------------------------ readout
 
 function renderReadout() {
   const s = state.scene;
   const style = STYLES[s.style];
   document.getElementById('sceneName').textContent = s.name;
   const sp = s.spec;
+  const count = partsView().length / 8;
   const lines = [
-    style.label,
-    `${WALLS[Math.round(sp[S.wall])]} walls · ${Math.round(sp[S.count] * 100)}% dense · ${Math.round(sp[S.sub])} substeps`,
-    `gravity ${sp[S.grav].toFixed(2)} · swirl ${sp[S.swirl].toFixed(2)} · ${Math.round(state.fpsAvg)} fps`,
+    `${style.label} · ${count} particles`,
+    `${WALLS[Math.round(sp[S.walls])]} walls · ${Math.round(state.fpsAvg)} fps`,
   ];
   document.getElementById('sceneDetail').textContent = lines.join('\n');
-  document.getElementById('grav').value = sp[S.grav];
-  document.getElementById('gravVal').textContent = sp[S.grav].toFixed(2);
+  document.getElementById('grav').value = sp[S.speed];
+  document.getElementById('gravVal').textContent = sp[S.speed].toFixed(2);
   document.getElementById('trail').value = sp[S.trail];
   document.getElementById('trailVal').textContent = sp[S.trail].toFixed(2);
   document.getElementById('count').value = sp[S.count];
@@ -248,7 +246,7 @@ function highlightAspect() {
   }
 }
 
-// ------------------------------------------------------------------ toast
+// ---------------------------------------------------------------- toast
 
 let toastTimer = null;
 function toast(msg) {
@@ -259,7 +257,7 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
-// -------------------------------------------------------------------- UI
+// ------------------------------------------------------------------ UI
 
 function wire() {
   playBtn.addEventListener('click', play);
@@ -276,10 +274,12 @@ function wire() {
     toast('Renamed');
   });
 
+  // The Gravity slider is now a generic Speed slider -- it writes to
+  // spec[S.speed] and every style reads it.
   document.getElementById('grav').addEventListener('input', (e) => {
     const v = parseFloat(e.target.value);
-    state.scene.spec[S.grav] = v;
-    specView()[S.grav] = v;
+    state.scene.spec[S.speed] = v;
+    specView()[S.speed] = v;
     document.getElementById('gravVal').textContent = v.toFixed(2);
   });
 
@@ -295,8 +295,10 @@ function wire() {
     state.scene.spec[S.count] = v;
     specView()[S.count] = v;
     document.getElementById('countVal').textContent = Math.round(v * 100) + '%';
+    // Count is read once at init.
     init(state.worldW, state.worldH, state.scene.seed);
     drawOnce();
+    renderReadout();
   });
 
   for (const b of document.querySelectorAll('#aspectRow button')) {
@@ -356,10 +358,7 @@ function wire() {
     else if (e.key === 'r') rerollStyle();
   });
 
-  setInterval(() => {
-    if (state.scene) renderReadout();
-  }, 1000);
-
+  setInterval(() => { if (state.scene) renderReadout(); }, 1000);
   highlightAspect();
 }
 
