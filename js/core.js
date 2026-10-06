@@ -1,8 +1,8 @@
 // The WebAssembly core, wrapped up.
 //
-// The module owns its own memory and never grows it, so once the views are
-// made they stay valid for the life of the page. Reading the draw list is
-// free: it is a Float32Array pointed straight at the wasm.
+// Same idea as before, with the raster path added. The module owns its
+// own memory and never grows it, so once the views are made they stay
+// valid for the life of the page.
 
 let exports = null;
 
@@ -12,23 +12,27 @@ export async function loadCore() {
   const bytes = await res.arrayBuffer();
   const { instance } = await WebAssembly.instantiate(bytes, {});
   exports = instance.exports;
-  if (!exports.memory) {
-    throw new Error('the wasm module did not export memory');
-  }
+  if (!exports.memory) throw new Error('the wasm module did not export memory');
   return exports;
 }
 
-// The 24 spec floats. The browser writes them, then calls init().
 export function spec() {
   return new Float32Array(exports.memory.buffer, exports.spec_ptr(), 24);
 }
 
-// The draw list: prim_count() records of 10 floats each. Do not keep a
-// reference across frames -- just read it right after step().
 export function prims() {
   const n = exports.prim_count();
   if (!n) return new Float32Array(0);
   return new Float32Array(exports.memory.buffer, exports.prim_ptr(), n * 10);
+}
+
+// Raster path, used by Flow. `isRaster()` is the check JS branches on.
+export function isRaster() { return exports.is_raster() === 1; }
+export function rasterW() { return exports.raster_w(); }
+export function rasterH() { return exports.raster_h(); }
+export function rasterView() {
+  const n = exports.raster_w() * exports.raster_h() * 4;
+  return new Uint8ClampedArray(exports.memory.buffer, exports.raster_ptr(), n);
 }
 
 export function init(w, h, seed) { exports.init(w, h, seed); }
