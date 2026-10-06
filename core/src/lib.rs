@@ -32,8 +32,8 @@ const RW: usize = 200;
 const RH: usize = 200;
 const RD_N: usize = RW * RH;
 
-// Sand's grid. Cells are 1000/90 ~ 11 world units tall, which reads as
-// grains at any sane display size.
+// Sand's grid. Cells are ~11 world units tall, which reads as grains at
+// any sane display size.
 const SAND_W: usize = 90;
 const SAND_H: usize = 90;
 const SAND_N: usize = SAND_W * SAND_H;
@@ -43,15 +43,15 @@ const CELL_WALL: u8 = 2;
 
 // ------------------------------------------------------------ spec layout
 
-const S_STYLE: usize   = 0;  // 0..4
-const S_COUNT: usize   = 1;  // 0..1, scales the style's max
+const S_STYLE: usize   = 0;
+const S_COUNT: usize   = 1;
 const S_GRAV: usize    = 2;
 const S_DRAG: usize    = 3;
 const S_BOUNCE: usize  = 4;
 const S_WIND: usize    = 5;
 const S_SWIRL: usize   = 6;
 const S_JITTER: usize  = 7;
-const S_MUTUAL: usize  = 8;  // unused now; kept for the code format
+const S_MUTUAL: usize  = 8;
 const S_SPACING: usize = 9;
 const S_K: usize       = 10;
 const S_FIELDS: usize  = 11;
@@ -71,11 +71,11 @@ const S_ASPECT: usize  = 23;
 /// How many bodies each style wants at full density. `S_COUNT` scales
 /// these. The arrays are always allocated for the maximum.
 const STYLE_MAX: [usize; 5] = [
-    420,   // Body: enough for a disk with real dynamics
-    900,   // Cloth: a 30x30 sheet
-    460,   // Flock: boids get expensive; this is the ceiling
-    SAND_N, // Sand: it is the grid
-    0,     // Flow: no particles, it runs on its own raster
+    420,     // Body
+    900,     // Cloth
+    460,     // Flock
+    SAND_N,  // Sand
+    0,       // Flow: no particles
 ];
 
 // ------------------------------------------------------------------- rng
@@ -107,28 +107,23 @@ struct World {
     nl: usize,
     nprim: usize,
 
-    // Particle state. Used by Body, Cloth, Flock.
     px: [f32; MAX_P], py: [f32; MAX_P],
     vx: [f32; MAX_P], vy: [f32; MAX_P],
     ox: [f32; MAX_P], oy: [f32; MAX_P],
-    ax: [f32; MAX_P], ay: [f32; MAX_P], // acceleration accumulator, N-body
-    pm: [f32; MAX_P],                    // mass
+    ax: [f32; MAX_P], ay: [f32; MAX_P],
+    pm: [f32; MAX_P],
     ptone: [f32; MAX_P],
     pinned: [u8; MAX_P],
 
-    // Links. Used by Cloth.
     la: [u32; MAX_L], lb: [u32; MAX_L],
     lrest: [f32; MAX_L], ltone: [f32; MAX_L],
 
-    // Sand's grid.
     sand: [u8; SAND_N],
     sand_out: [u8; SAND_N],
 
     prim: [f32; MAX_PRIM * PRIM],
     pal: [[f32; 3]; NPAL],
 
-    // Flow's raster. Kept on the struct so it lives in one place; the
-    // separate `is_raster()` flag tells JS which output to read.
     is_raster: u8,
 }
 
@@ -158,8 +153,6 @@ impl World {
 
 static mut W: World = World::new();
 
-// Flow's own state. Large enough to keep off the struct, and it makes
-// the diff smaller when only Flow changes.
 static mut RD_A:  [f32; RD_N] = [0.0; RD_N];
 static mut RD_B:  [f32; RD_N] = [0.0; RD_N];
 static mut RD_A2: [f32; RD_N] = [0.0; RD_N];
@@ -281,17 +274,6 @@ impl World {
 }
 
 // ============================================================ BODY =========
-//
-// N-body gravitational. Every body is attracted to every other by real
-// inverse-square gravity, softened just enough that two bodies landing on
-// each other do not produce a divide-by-zero. O(n^2) but n is a few
-// hundred and the frame budget is generous: 400 bodies is 80,000 pairs a
-// step, well under what wasm handles at 60 Hz.
-//
-// The scene is a heavy star at the centre and a disk of light bodies in
-// slightly sub-circular orbits. The slight deficit is what makes them
-// spiral inward over minutes, so the scene evolves without anything being
-// scheduled.
 
 fn body_init(w: &mut World) {
     let n = w.np;
@@ -299,7 +281,6 @@ fn body_init(w: &mut World) {
     let cx = w.w * 0.5;
     let cy = w.h * 0.5;
 
-    // The star.
     w.px[0] = cx; w.py[0] = cy;
     w.ox[0] = cx; w.oy[0] = cy;
     w.vx[0] = 0.0; w.vy[0] = 0.0;
@@ -312,14 +293,11 @@ fn body_init(w: &mut World) {
 
     for i in 1..n {
         let a = rnd(&mut w.rng) * TAU;
-        // sqrt gives a uniform area distribution, which reads as a disk
-        // rather than a ring.
         let r = (60.0 + rnd(&mut w.rng).sqrt() * r_max).max(60.0);
         let x = cx + a.cos() * r;
         let y = cy + a.sin() * r;
         w.px[i] = x; w.py[i] = y;
         w.ox[i] = x; w.oy[i] = y;
-        // Circular velocity for this radius, times 0.94 so the orbit decays.
         let v = (g * w.pm[0] / r).sqrt() * 0.94;
         let jitter = 6.0;
         w.vx[i] = -a.sin() * v + rr(&mut w.rng, -jitter, jitter);
@@ -342,10 +320,6 @@ fn body_step(w: &mut World, dt: f32) {
         w.ay[i] = 0.0;
     }
 
-    // Pairwise, symmetric: accumulate both halves in one pass. The
-    // acceleration is force divided by mass, and the force is symmetric,
-    // so the masses cancel into the pair loop rather than in a second
-    // pass.
     for i in 0..n {
         let xi = w.px[i];
         let yi = w.py[i];
@@ -354,7 +328,6 @@ fn body_step(w: &mut World, dt: f32) {
             let dy = w.py[j] - yi;
             let d2 = dx * dx + dy * dy + soft2;
             let inv_d = 1.0 / d2.sqrt();
-            // f = G / d^3, then ax += dx * f * m_other
             let inv_d3 = inv_d / d2;
             let f = g * inv_d3;
             let fmj = f * w.pm[j];
@@ -377,9 +350,6 @@ fn body_step(w: &mut World, dt: f32) {
         w.py[i] += w.vy[i] * dt;
     }
 
-    // Toroidal walls keep the system open: bodies that leave come back on
-    // the other side, so the whole thing runs without anything piling up
-    // in a corner.
     for i in 0..n {
         if w.px[i] < -40.0 { w.px[i] += w.w + 80.0; w.ox[i] += w.w + 80.0; }
         if w.px[i] > w.w + 40.0 { w.px[i] -= w.w + 80.0; w.ox[i] -= w.w + 80.0; }
@@ -394,21 +364,17 @@ fn body_emit(w: &mut World) {
     let size = w.spec[S_SIZE];
     let trail = w.spec[S_TRAIL];
 
-    // Trails first, so they sit under the bodies.
     if trail > 0.02 {
         for i in 1..n {
             let dx = w.px[i] - w.ox[i];
             let dy = w.py[i] - w.oy[i];
             if dx * dx + dy * dy < 0.5 { continue; }
             let (r, g, b, a) = pal(w, w.ptone[i], bri * 0.5 * trail);
-            // Trail length scales with the trail slider; a heavier body
-            // gets a slightly brighter one.
             let m = (w.pm[i] * 0.5 + 0.6).min(1.3);
             w.prim_line(w.ox[i], w.oy[i], w.px[i], w.py[i], r, g, b, a, size * 0.5 * m);
         }
     }
 
-    // Bodies. The star is drawn big and white; the rest are sized by mass.
     for i in 0..n {
         let m = w.pm[i];
         let t = if i == 0 { 0.98 } else { w.ptone[i] * 0.7 };
@@ -419,17 +385,6 @@ fn body_emit(w: &mut World) {
 }
 
 // =========================================================== CLOTH =========
-//
-// Verlet integration with distance constraints, projected iteratively.
-// This is the model behind every soft body, rope and cloth in every game
-// made since 2001, and it earns its place here by being nothing like a
-// particle system: there is no per-body force, no velocity vector, and
-// nothing is integrated twice. Each frame the position is moved by the
-// position's own recent change, and then a small number of relaxation
-// passes pull every stretched constraint back to its rest length.
-//
-// The scene is a sheet pinned along its top edge, dropped into gravity
-// and pushed around by wind.
 
 fn cloth_init(w: &mut World) {
     let n = w.np;
@@ -454,16 +409,11 @@ fn cloth_init(w: &mut World) {
             w.ox[k] = x; w.oy[k] = y;
             w.vx[k] = 0.0; w.vy[k] = 0.0;
             w.ptone[k] = r as f32 / rows as f32;
-            // Pin only the middle of the top row, so the sheet swings
-            // from a single point rather than hanging rigidly.
             w.pinned[k] = if r == 0 && (c as i32 - (cols as i32) / 2).abs() <= 1 { 1 } else { 0 };
             k += 1;
         }
     }
 
-    // Structural constraints: right and down neighbours. Adding diagonals
-    // (shear constraints) would stiffen the sheet noticeably and is worth
-    // trying later; for a draping cloth the structural ones are enough.
     for r in 0..rows {
         for c in 0..cols {
             let i = r * cols + c;
@@ -477,35 +427,35 @@ fn cloth_init(w: &mut World) {
 fn cloth_step(w: &mut World, dt: f32) {
     let n = w.np;
     if n == 0 { return; }
-    let g = w.spec[S_GRAV] * 900.0;
+    // Gravity, in units per second squared. The Verlet update below adds
+    // `a * h * h` per frame, and `h` is scaled so that at 60 fps it comes
+    // out at 1.0 -- so the number here is very nearly the number of world
+    // units a body falls in its first frame. The sheet is ~620 units
+    // tall, so anything above about 20 will throw it off-screen before
+    // the constraint solver can catch it.
+    let g = w.spec[S_GRAV] * 8.0;
     let wind = w.spec[S_WIND];
     let damp = 1.0 - w.spec[S_DRAG] * 0.08;
-    // Verlet wants a fixed-ish timestep; the frame's dt scaled to a
-    // constant feels right regardless of frame rate.
     let h = dt * 60.0;
     let hh = h * h;
 
     for i in 0..n {
         if w.pinned[i] != 0 { continue; }
         // Wind varies with position, so the sheet ripples instead of
-        // being pushed bodily.
+        // being pushed bodily. Scaled to match gravity: a wind of 1.0
+        // and a gravity of 1.0 should push the sheet about equally.
         let z = w.py[i] * 0.007 + w.t * 1.3;
-        let wx = wind * (1.0 + 0.6 * (z).sin()) * 900.0;
-        let wy = wind * 0.3 * (z * 0.7 + 1.7).cos() * 900.0;
+        let wx = wind * (1.0 + 0.6 * (z).sin()) * 8.0;
+        let wy = wind * 0.3 * (z * 0.7 + 1.7).cos() * 8.0;
 
         let vx = (w.px[i] - w.ox[i]) * damp;
         let vy = (w.py[i] - w.oy[i]) * damp;
         w.ox[i] = w.px[i];
         w.oy[i] = w.py[i];
-        w.vx[i] = vx;
-        w.vy[i] = vy;
         w.px[i] += vx + wx * hh;
         w.py[i] += vy + g * hh + wy * hh;
     }
 
-    // Constraint projection. `stiffness` from the spec sets how many
-    // relaxation passes; more passes is a stiffer cloth, and it costs
-    // nothing but time.
     let iters = (2 + (w.spec[S_K] * 4.0) as i32).clamp(2, 6);
     for _ in 0..iters {
         for l in 0..w.nl {
@@ -531,8 +481,6 @@ fn cloth_emit(w: &mut World) {
     let size = w.spec[S_SIZE];
     let trail = w.spec[S_TRAIL];
 
-    // Trails first: each pinned body leaves a short blur behind it,
-    // which reads as the sheet moving through air.
     if trail > 0.05 {
         for i in 0..w.np {
             if w.pinned[i] != 0 { continue; }
@@ -544,7 +492,6 @@ fn cloth_emit(w: &mut World) {
         }
     }
 
-    // Spring lines, coloured by how stretched they are.
     for l in 0..w.nl {
         let a = w.la[l] as usize;
         let b = w.lb[l] as usize;
@@ -554,8 +501,6 @@ fn cloth_emit(w: &mut World) {
         let d = (dx * dx + dy * dy).sqrt();
         let rest = w.lrest[l].max(0.5);
         let stretch = ((d - rest) / rest).abs().min(1.0);
-        // Base tone follows the sheet's rows (top bright, bottom dark);
-        // stretch pushes it up the ramp so tension reads in the colour.
         let t = (w.ptone[a] * 0.55 + stretch * 0.9).clamp(0.0, 1.0);
         let (cr, cg, cb, ca) = pal(w, t, bri * (0.55 + stretch * 0.4));
         w.prim_line(w.px[a], w.py[a], w.px[b], w.py[b], cr, cg, cb, ca, size * 0.75);
@@ -563,15 +508,6 @@ fn cloth_emit(w: &mut World) {
 }
 
 // =========================================================== FLOCK =========
-//
-// Boids. Each boid steers by three rules -- separation, alignment,
-// cohesion -- and nothing else. No global forces, no attractors, no
-// walls; the flock's shape is entirely an emergent property of the three
-// rules and it looks alive because it is. This is the one simulation
-// here where the picture *is* the algorithm.
-//
-// Drawn as a dot for each boid plus a short arrow along its velocity, so
-// the direction of travel is visible without having to watch it move.
 
 fn flock_init(w: &mut World) {
     let n = w.np;
@@ -596,8 +532,6 @@ fn flock_init(w: &mut World) {
 fn flock_step(w: &mut World, dt: f32) {
     let n = w.np;
     if n < 2 { return; }
-    // All distances are in world units; the flock is sized for a
-    // 1000-tall world and would need scaling for anything else.
     let sep_r2 = 42.0_f32 * 42.0;
     let ali_r2 = 110.0_f32 * 110.0;
     let coh_r2 = 170.0_f32 * 170.0;
@@ -628,8 +562,6 @@ fn flock_step(w: &mut World, dt: f32) {
             let dy = w.py[j] - yi;
             let d2 = dx * dx + dy * dy;
             if d2 < sep_r2 && d2 > 0.0001 {
-                // Separation pushes away, and pushes harder the closer
-                // the neighbour is, hence the divide by d.
                 let d = d2.sqrt();
                 sepx -= dx / d / d;
                 sepy -= dy / d / d;
@@ -651,14 +583,11 @@ fn flock_step(w: &mut World, dt: f32) {
         let mut ay = 0.0f32;
 
         if n_sep > 0 {
-            // Normalise to a constant magnitude; without this the
-            // separation grows without bound in a dense clump.
             let m = (sepx * sepx + sepy * sepy).sqrt().max(0.001);
             ax += sepx / m * max_force * w_sep;
             ay += sepy / m * max_force * w_sep;
         }
         if n_ali > 0 {
-            // Steer toward the average velocity of the neighbours.
             alix /= n_ali as f32;
             aliy /= n_ali as f32;
             let m = (alix * alix + aliy * aliy).sqrt().max(0.001);
@@ -668,7 +597,6 @@ fn flock_step(w: &mut World, dt: f32) {
             ay += (ty - vyi) * w_ali;
         }
         if n_coh > 0 {
-            // Steer toward the centroid of the neighbours.
             cohx /= n_coh as f32;
             cohy /= n_coh as f32;
             let dx = cohx - xi;
@@ -680,7 +608,6 @@ fn flock_step(w: &mut World, dt: f32) {
             ay += (ty - vyi) * w_coh;
         }
 
-        // Clamp force, then integrate.
         let fm = (ax * ax + ay * ay).sqrt();
         if fm > max_force {
             let s = max_force / fm;
@@ -696,8 +623,6 @@ fn flock_step(w: &mut World, dt: f32) {
     for i in 0..n {
         w.vx[i] = (w.vx[i] + w.ax[i] * dt) * drag;
         w.vy[i] = (w.vy[i] + w.ay[i] * dt) * drag;
-        // Clamp speed between min and max: a boid that stalls looks
-        // broken, and a boid that runs away from the flock looks lost.
         let s2 = w.vx[i] * w.vx[i] + w.vy[i] * w.vy[i];
         let s = s2.sqrt();
         if s > max_speed {
@@ -712,9 +637,6 @@ fn flock_step(w: &mut World, dt: f32) {
         w.px[i] += w.vx[i] * dt;
         w.py[i] += w.vy[i] * dt;
 
-        // Soft wrap: nudge back toward the frame when out of bounds.
-        // Hard walls turn the flock into a bouncing mess; a gentle push
-        // keeps it inside without the edges ever showing.
         let m = 100.0;
         if w.px[i] < m { w.vx[i] += (m - w.px[i]) * 4.0 * dt; }
         if w.px[i] > w.w - m { w.vx[i] -= (w.px[i] - (w.w - m)) * 4.0 * dt; }
@@ -728,8 +650,6 @@ fn flock_emit(w: &mut World) {
     let size = w.spec[S_SIZE];
     let trail = w.spec[S_TRAIL];
 
-    // Trails: a short line from previous to current. With the velocity
-    // arrow below this reads as motion rather than as a wandering dot.
     if trail > 0.02 {
         for i in 0..w.np {
             let dx = w.px[i] - w.ox[i];
@@ -740,10 +660,6 @@ fn flock_emit(w: &mut World) {
         }
     }
 
-    // Velocity arrows: a line from the boid along its direction of travel,
-    // length scaled by speed. This is what makes the flock read as a flock
-    // even in a still frame -- the arrows all point the same way when the
-    // boids are aligned, and scatter when they are not.
     for i in 0..w.np {
         let vx = w.vx[i];
         let vy = w.vy[i];
@@ -758,22 +674,10 @@ fn flock_emit(w: &mut World) {
 }
 
 // ============================================================ SAND =========
-//
-// A cellular automaton. Not physics in the continuous sense -- there are
-// no forces, no velocities, no integration -- but the sand *does* fall,
-// pile, and flow, and it looks like sand. The grid is scanned from the
-// bottom up each step, and each sand cell looks at the three cells below
-// it and moves if it can. That's the whole rule set.
-//
-// Walls are static and pre-seeded as an obstacle course in the middle of
-// the frame; the source at the top emits sand that flows around them.
 
 fn sand_init(w: &mut World) {
-    let n = SAND_N;
-    for i in 0..n { w.sand[i] = CELL_EMPTY; }
+    for i in 0..SAND_N { w.sand[i] = CELL_EMPTY; }
 
-    // Source: a horizontal bar near the top with a hole in it. Grains
-    // fall through the hole in a stream.
     let sr = 6;
     let hole_l = SAND_W * 4 / 10;
     let hole_r = SAND_W * 6 / 10;
@@ -783,8 +687,6 @@ fn sand_init(w: &mut World) {
         }
     }
 
-    // Obstacle: a diagonal plate in the middle, so the falling sand
-    // splits into two streams and piles at either side.
     let x0 = SAND_W / 6;
     let y0 = SAND_H / 2 - 10;
     for k in 0..(SAND_W * 2 / 3) {
@@ -795,13 +697,10 @@ fn sand_init(w: &mut World) {
         }
     }
 
-    // Floor.
     for c in 0..SAND_W {
         w.sand[(SAND_H - 1) * SAND_W + c] = CELL_WALL;
     }
 
-    // Some initial sand above the source, so the scene starts with
-    // motion rather than an empty grid filling in.
     for _ in 0..(SAND_W * 3) {
         let c = (rnd(&mut w.rng) * SAND_W as f32) as usize % SAND_W;
         let r = (rnd(&mut w.rng) * (SAND_H / 3) as f32) as usize;
@@ -811,13 +710,8 @@ fn sand_init(w: &mut World) {
 }
 
 fn sand_step(w: &mut World, _dt: f32) {
-    // Copy the grid first; the new state is written into the copy so the
-    // scan does not see its own output.
     for i in 0..SAND_N { w.sand_out[i] = w.sand[i]; }
 
-    // Bottom-up, right-to-left on odd rows and left-to-right on even, so
-    // the pile has a slight alternating bias and does not stack in perfect
-    // columns.
     let _ = rnd(&mut w.rng);
     let lean_left = rnd(&mut w.rng) < 0.5;
 
@@ -829,14 +723,11 @@ fn sand_step(w: &mut World, _dt: f32) {
                 let i = row + c;
                 if w.sand[i] != CELL_SAND { continue; }
                 let below = next + c;
-                // Straight down.
                 if w.sand_out[below] == CELL_EMPTY {
                     w.sand_out[below] = CELL_SAND;
                     w.sand_out[i] = CELL_EMPTY;
                     continue;
                 }
-                // Diagonal. Alternate the order so the pile is not all
-                // leaning one way.
                 let dl = if c > 0 { next + c - 1 } else { 0 };
                 let dr = if c + 1 < SAND_W { next + c + 1 } else { 0 };
                 let try_left = c > 0 && w.sand_out[dl] == CELL_EMPTY;
@@ -879,8 +770,6 @@ fn sand_step(w: &mut World, _dt: f32) {
         }
     }
 
-    // Emit a stream of new grains from the source gap in the top bar,
-    // so the pile keeps growing.
     let sr = 7;
     let c0 = SAND_W * 4 / 10;
     let c1 = SAND_W * 6 / 10;
@@ -891,7 +780,6 @@ fn sand_step(w: &mut World, _dt: f32) {
         }
     }
 
-    // Swap.
     for i in 0..SAND_N { w.sand[i] = w.sand_out[i]; }
 }
 
@@ -902,9 +790,6 @@ fn sand_emit(w: &mut World) {
     let hw = cw * 0.5;
     let hh = ch * 0.5;
 
-    // Walls are drawn as a flat dark field, sand bright. The palette is
-    // used for the sand; the wall is a wash of the dark end so the
-    // obstacle reads as a shape without any explicit outline.
     let (wr, wg, wb, _) = pal(w, 0.08, 1.0);
 
     for r in 0..SAND_H {
@@ -917,9 +802,6 @@ fn sand_emit(w: &mut World) {
             if cell == CELL_WALL {
                 w.prim_rect(cx, cy, hw, hh, wr, wg, wb, 0.9);
             } else {
-                // Sand: shade by depth so the pile has volume, and give
-                // grains a slight jitter to the colour so it does not
-                // read as a single flat rectangle.
                 let depth = r as f32 / SAND_H as f32;
                 let t = (0.35 + depth * 0.55).clamp(0.0, 1.0);
                 let j = ((c * 73 + r * 151) % 17) as f32 / 170.0 - 0.05;
@@ -931,15 +813,6 @@ fn sand_emit(w: &mut World) {
 }
 
 // ============================================================ FLOW =========
-//
-// Gray-Scott reaction-diffusion. Two chemicals, A and B, on a grid; A is
-// fed in, B is removed, and they react where they meet. The rule is five
-// lines and the output is spots, stripes, worms, mazes and things that
-// split and rejoin forever. This is the one simulation here that is not
-// made of particles at all, and it looks nothing like the others.
-//
-// Output is a raster: `is_raster()` returns 1 for this style and JS reads
-// `raster_ptr()` instead of the draw list.
 
 fn flow_init(w: &mut World) {
     unsafe {
@@ -947,9 +820,6 @@ fn flow_init(w: &mut World) {
             RD_A[i] = 1.0;
             RD_B[i] = 0.0;
         }
-        // Seed a handful of B blobs. Where they are and how big they are
-        // is the only decision the seed makes for Flow; everything after
-        // is the rule.
         let seeds = 12 + (rnd(&mut w.rng) * 12.0) as usize;
         for _ in 0..seeds {
             let cx = (rnd(&mut w.rng) * RW as f32) as usize;
@@ -969,12 +839,9 @@ fn flow_init(w: &mut World) {
 
 fn flow_step(w: &mut World, _dt: f32) {
     unsafe {
-        // Feed and kill. Different regions of (f, k) space give
-        // different patterns: spots, worms, stripes, mazes. The scene
-        // picks a point inside the worm-and-spot band by default.
         let f = 0.036 + w.spec[S_GRAV] * 0.014;
         let k = 0.061 + w.spec[S_WIND] * 0.010;
-        let da = 1.0;      // A diffuses faster than B
+        let da = 1.0;
         let db = 0.5;
         let dt = 1.0;
 
@@ -987,10 +854,8 @@ fn flow_step(w: &mut World, _dt: f32) {
                 let d = ((y + 1) % RH) * RW + x;
                 let a = RD_A[i];
                 let b = RD_B[i];
-                // Five-point Laplacian.
                 let la = RD_A[l] + RD_A[r] + RD_A[u] + RD_A[d] - 4.0 * a;
                 let lb = RD_B[l] + RD_B[r] + RD_B[u] + RD_B[d] - 4.0 * b;
-                // The reaction.
                 let abb = a * b * b;
                 let na = a + (da * la - abb + f * (1.0 - a)) * dt;
                 let nb = b + (db * lb + abb - (k + f) * b) * dt;
@@ -998,16 +863,11 @@ fn flow_step(w: &mut World, _dt: f32) {
                 RD_B2[i] = nb;
             }
         }
-        // Swap. Clamp, so a numerical wobble can never blow a cell to
-        // infinity and take the rest of the field with it.
         for i in 0..RD_N {
             RD_A[i] = RD_A2[i].clamp(0.0, 1.0);
             RD_B[i] = RD_B2[i].clamp(0.0, 1.0);
         }
 
-        // Colour: the B field through the palette. A high B means the
-        // spot is present; A is the background. Every pixel is written
-        // every frame; the raster is the entire output.
         for i in 0..RD_N {
             let b = RD_B[i];
             let t = (b * 4.0).clamp(0.0, 1.0);
@@ -1086,7 +946,6 @@ pub extern "C" fn init(w: f32, h: f32, seed: u32) {
         ww.t = 0.0;
         build_palette(ww);
         scene_init(ww);
-        // A first emit, so a paused scene shows something on load.
         if ww.is_raster == 0 {
             match ww.spec[S_STYLE] as usize {
                 0 => body_emit(ww),
